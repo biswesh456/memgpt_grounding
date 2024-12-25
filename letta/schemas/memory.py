@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from jinja2 import Template, TemplateSyntaxError
 from pydantic import BaseModel, Field
@@ -55,16 +55,19 @@ class ContextWindowOverview(BaseModel):
 class Memory(BaseModel, validate_assignment=True):
     """
 
-    Represents the in-context memory (i.e. Core memory) of the agent. This includes both the `Block` objects (labelled by sections), as well as tools to edit the blocks.
+    Represents the in-context memory of the agent. This includes both the `Block` objects (labelled by sections), as well as tools to edit the blocks.
+
+    Attributes:
+        memory (Dict[str, Block]): Mapping from memory block section to memory block.
 
     """
 
-    # Memory.block contains the list of memory blocks in the core memory
-    blocks: List[Block] = Field(..., description="Memory blocks contained in the agent's in-context memory")
+    # Memory.memory is a dict mapping from memory block label to memory block.
+    memory: Dict[str, Block] = Field(default_factory=dict, description="Mapping from memory block section to memory block.")
 
     # Memory.template is a Jinja2 template for compiling memory module into a prompt string.
     prompt_template: str = Field(
-        default="{% for block in blocks %}"
+        default="{% for block in memory.values() %}"
         '<{{ block.label }} characters="{{ block.value|length }}/{{ block.limit }}">\n'
         "{{ block.value }}\n"
         "</{{ block.label }}>"
@@ -87,7 +90,7 @@ class Memory(BaseModel, validate_assignment=True):
             Template(prompt_template)
 
             # Validate compatibility with current memory structure
-            test_render = Template(prompt_template).render(blocks=self.blocks)
+            test_render = Template(prompt_template).render(memory=self.memory)
 
             # If we get here, the template is valid and compatible
             self.prompt_template = prompt_template
@@ -96,49 +99,107 @@ class Memory(BaseModel, validate_assignment=True):
         except Exception as e:
             raise ValueError(f"Prompt template is not compatible with current memory structure: {str(e)}")
 
+    @classmethod
+    def load(cls, state: dict):
+        """Load memory from dictionary object"""
+        obj = cls()
+        if len(state.keys()) == 2 and "memory" in state and "prompt_template" in state:
+            # New format
+            obj.prompt_template = state["prompt_template"]
+            for key, value in state["memory"].items():
+                # TODO: This is migration code, please take a look at a later time to get rid of this
+                if "name" in value:
+                    value["template_name"] = value["name"]
+                    value.pop("name")
+                obj.memory[key] = Block(**value)
+        else:
+            # Old format (pre-template)
+            for key, value in state.items():
+                obj.memory[key] = Block(**value)
+        return obj
+
     def compile(self) -> str:
         """Generate a string representation of the memory in-context using the Jinja2 template"""
         template = Template(self.prompt_template)
-        return template.render(blocks=self.blocks)
+        return template.render(memory=self.memory)
+
+    def to_dict(self):
+        """Convert to dictionary representation"""
+        return {
+            "memory": {key: value.model_dump() for key, value in self.memory.items()},
+            "prompt_template": self.prompt_template,
+        }
+
+    def to_flat_dict(self):
+        """Convert to a dictionary that maps directly from block label to values"""
+        return {k: v.value for k, v in self.memory.items() if v is not None}
 
     def list_block_labels(self) -> List[str]:
         """Return a list of the block names held inside the memory object"""
-        # return list(self.memory.keys())
-        return [block.label for block in self.blocks]
+        return list(self.memory.keys())
 
     # TODO: these should actually be label, not name
     def get_block(self, label: str) -> Block:
         """Correct way to index into the memory.memory field, returns a Block"""
-        keys = []
-        for block in self.blocks:
-            if block.label == label:
-                return block
-            keys.append(block.label)
-        raise KeyError(f"Block field {label} does not exist (available sections = {', '.join(keys)})")
+        if label not in self.memory:
+            raise KeyError(f"Block field {label} does not exist (available sections = {', '.join(list(self.memory.keys()))})")
+        else:
+            return self.memory[label]
 
     def get_blocks(self) -> List[Block]:
         """Return a list of the blocks held inside the memory object"""
-        # return list(self.memory.values())
-        return self.blocks
+        return list(self.memory.values())
 
-    def set_block(self, block: Block):
-        """Set a block in the memory object"""
-        for i, b in enumerate(self.blocks):
-            if b.label == block.label:
-                self.blocks[i] = block
-                return
-        self.blocks.append(block)
+    def link_block(self, block: Block, override: Optional[bool] = False):
+        """Link a new block to the memory object"""
+        if not isinstance(block, Block):
+            raise ValueError(f"Param block must be type Block (not {type(block)})")
+        if not override and block.label in self.memory:
+            raise ValueError(f"Block with label {block.label} already exists")
+
+        self.memory[block.label] = block
+
+    def unlink_block(self, block_label: str) -> Block:
+        """Unlink a block from the memory object"""
+        if block_label not in self.memory:
+            raise ValueError(f"Block with label {block_label} does not exist")
+
+        return self.memory.pop(block_label)
 
     def update_block_value(self, label: str, value: str):
         """Update the value of a block"""
+        if label not in self.memory:
+            raise ValueError(f"Block with label {label} does not exist")
         if not isinstance(value, str):
             raise ValueError(f"Provided value must be a string")
 
-        for block in self.blocks:
-            if block.label == label:
-                block.value = value
-                return
-        raise ValueError(f"Block with label {label} does not exist")
+        self.memory[label].value = value
+
+    def update_block_label(self, current_label: str, new_label: str):
+        """Update the label of a block"""
+        if current_label not in self.memory:
+            raise ValueError(f"Block with label {current_label} does not exist")
+        if not isinstance(new_label, str):
+            raise ValueError(f"Provided new label must be a string")
+
+        # First change the label of the block
+        self.memory[current_label].label = new_label
+
+        # Then swap the block to the new label
+        self.memory[new_label] = self.memory.pop(current_label)
+
+    def update_block_limit(self, label: str, limit: int):
+        """Update the limit of a block"""
+        if label not in self.memory:
+            raise ValueError(f"Block with label {label} does not exist")
+        if not isinstance(limit, int):
+            raise ValueError(f"Provided limit must be an integer")
+
+        # Check to make sure the new limit is greater than the current length of the block
+        if len(self.memory[label].value) > limit:
+            raise ValueError(f"New limit {limit} is less than the current length of the block {len(self.memory[label].value)}")
+
+        self.memory[label].limit = limit
 
 
 # TODO: ideally this is refactored into ChatMemory and the subclasses are given more specific names.
@@ -161,7 +222,13 @@ class BasicBlockMemory(Memory):
         Args:
             blocks (List[Block]): List of blocks to be linked to the memory object.
         """
-        super().__init__(blocks=blocks)
+        super().__init__()
+        for block in blocks:
+            # TODO: centralize these internal schema validations
+            # assert block.name is not None and block.name != "", "each existing chat block must have a name"
+            # self.link_block(name=block.name, block=block)
+            assert block.label is not None and block.label != "", "each existing chat block must have a name"
+            self.link_block(block=block)
 
     def core_memory_append(agent_state: "AgentState", label: str, content: str) -> Optional[str]:  # type: ignore
         """
@@ -213,7 +280,9 @@ class ChatMemory(BasicBlockMemory):
             human (str): The starter value for the human block.
             limit (int): The character limit for each block.
         """
-        super().__init__(blocks=[Block(value=persona, limit=limit, label="persona"), Block(value=human, limit=limit, label="human")])
+        super().__init__()
+        self.link_block(block=Block(value=persona, limit=limit, label="persona"))
+        self.link_block(block=Block(value=human, limit=limit, label="human"))
 
 
 class UpdateMemory(BaseModel):

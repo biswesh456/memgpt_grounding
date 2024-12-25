@@ -22,10 +22,11 @@ from letta.orm.errors import (
 )
 from letta.schemas.agent import CreateAgent
 from letta.schemas.block import Block as PydanticBlock
-from letta.schemas.block import BlockUpdate, CreateBlock
+from letta.schemas.block import BlockUpdate
 from letta.schemas.embedding_config import EmbeddingConfig
 from letta.schemas.file import FileMetadata as PydanticFileMetadata
 from letta.schemas.llm_config import LLMConfig
+from letta.schemas.memory import ChatMemory
 from letta.schemas.organization import Organization as PydanticOrganization
 from letta.schemas.sandbox_config import (
     E2BSandboxConfig,
@@ -119,8 +120,10 @@ def sarah_agent(server: SyncServer, default_user, default_organization):
     agent_state = server.create_agent(
         request=CreateAgent(
             name="sarah_agent",
-            # memory_blocks=[CreateBlock(label="human", value="Charles"), CreateBlock(label="persona", value="I am a helpful assistant")],
-            memory_blocks=[],
+            memory=ChatMemory(
+                human="Charles",
+                persona="I am a helpful assistant",
+            ),
             llm_config=LLMConfig.default_config("gpt-4"),
             embedding_config=EmbeddingConfig.default_config(provider="openai"),
         ),
@@ -135,7 +138,10 @@ def charles_agent(server: SyncServer, default_user, default_organization):
     agent_state = server.create_agent(
         request=CreateAgent(
             name="charles_agent",
-            memory_blocks=[CreateBlock(label="human", value="Charles"), CreateBlock(label="persona", value="I am a helpful assistant")],
+            memory=ChatMemory(
+                human="Sarah",
+                persona="I am a helpful assistant",
+            ),
             llm_config=LLMConfig.default_config("gpt-4"),
             embedding_config=EmbeddingConfig.default_config(provider="openai"),
         ),
@@ -919,6 +925,7 @@ def test_default_e2b_settings_sandbox_config(server: SyncServer, default_user):
 
     # Assertions
     assert e2b_config.timeout == 5 * 60
+    assert e2b_config.template
     assert e2b_config.template == tool_settings.e2b_sandbox_template_id
 
 
@@ -1054,24 +1061,6 @@ def test_add_block_to_agent(server, sarah_agent, default_user, default_block):
     assert block_association.agent_id == sarah_agent.id
     assert block_association.block_id == default_block.id
     assert block_association.block_label == default_block.label
-
-
-def test_change_label_on_block_reflects_in_block_agents_table(server, sarah_agent, default_user, default_block):
-    # Add the block
-    block_association = server.blocks_agents_manager.add_block_to_agent(
-        agent_id=sarah_agent.id, block_id=default_block.id, block_label=default_block.label
-    )
-    assert block_association.block_label == default_block.label
-
-    # Change the block label
-    new_label = "banana"
-    block = server.block_manager.update_block(block_id=default_block.id, block_update=BlockUpdate(label=new_label), actor=default_user)
-    assert block.label == new_label
-
-    # Get the association
-    labels = server.blocks_agents_manager.list_block_labels_for_agent(agent_id=sarah_agent.id)
-    assert new_label in labels
-    assert default_block.label not in labels
 
 
 def test_add_block_to_agent_nonexistent_block(server, sarah_agent, default_user):

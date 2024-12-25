@@ -154,7 +154,7 @@ class ToolExecutionSandbox:
         env_vars = self.sandbox_config_manager.get_sandbox_env_vars_as_dict(sandbox_config_id=sbx_config.id, actor=self.user, limit=100)
         execution = sbx.run_code(code, envs=env_vars)
         if execution.error is not None:
-            raise Exception(f"Executing tool {self.tool_name} failed with {execution.error}")
+            raise Exception(f"Executing tool {self.tool_name} failed with {execution.error}. Generated code: \n\n{code}")
         elif len(execution.results) == 0:
             return None
         else:
@@ -276,25 +276,6 @@ class ToolExecutionSandbox:
 
         return code
 
-    def _convert_param_to_value(self, param_type: str, raw_value: str) -> str:
-
-        if param_type == "string":
-            value = '"' + raw_value + '"'
-
-        elif param_type == "integer" or param_type == "boolean" or param_type == "number":
-            value = raw_value
-
-        elif param_type == "array":
-            value = raw_value
-
-        elif param_type == "object":
-            value = raw_value
-
-        else:
-            raise TypeError(f"Unsupported type: {param_type}, raw_value={raw_value}")
-
-        return str(value)
-
     def initialize_param(self, name: str, raw_value: str) -> str:
         params = self.tool.json_schema["parameters"]["properties"]
         spec = params.get(name)
@@ -306,9 +287,14 @@ class ToolExecutionSandbox:
         if param_type is None and spec.get("parameters"):
             param_type = spec["parameters"].get("type")
 
-        value = self._convert_param_to_value(param_type, raw_value)
+        if param_type == "string":
+            value = '"' + raw_value + '"'
+        elif param_type == "integer" or param_type == "boolean":
+            value = raw_value
+        else:
+            raise TypeError(f"unsupported type: {param_type}")
 
-        return name + " = " + value + "\n"
+        return name + " = " + str(value) + "\n"
 
     def invoke_function_call(self, inject_agent_state: bool) -> str:
         """

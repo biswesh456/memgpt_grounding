@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from letta.schemas.enums import MessageStreamStatus
 from letta.schemas.letta_message import LettaMessage, LettaMessageUnion
+from letta.schemas.message import Message
 from letta.schemas.usage import LettaUsageStatistics
 from letta.utils import json_dumps
 
@@ -23,7 +24,7 @@ class LettaResponse(BaseModel):
         usage (LettaUsageStatistics): The usage statistics
     """
 
-    messages: List[LettaMessageUnion] = Field(..., description="The messages returned by the agent.")
+    messages: Union[List[Message], List[LettaMessageUnion]] = Field(..., description="The messages returned by the agent.")
     usage: LettaUsageStatistics = Field(..., description="The usage statistics of the agent.")
 
     def __str__(self):
